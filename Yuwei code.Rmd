@@ -1,0 +1,351 @@
+<<<<<<< HEAD
+---
+title: "R assignment"
+author: "Yuwei Zhang"
+date: "2024-03-06"
+output: html_document
+---
+# Preparation
+## Import file through github link
+```{r}
+url_raw <- "https://raw.githubusercontent.com/EEOB-BioData/BCB546_Spring2024/main/assignments/UNIX_Assignment/fang_et_al_genotypes.txt"
+fang <- read.delim(url_raw, header = TRUE, sep = "\t", quote = "")
+url_raw2 <-"https://raw.githubusercontent.com/EEOB-BioData/BCB546_Spring2024/main/assignments/UNIX_Assignment/snp_position.txt"
+snp <- read.delim(url_raw2, header = TRUE, sep = "\t", quote = "")
+```
+
+# 1. data inspection
+By running the code below we know that fang et al. has 2782 rows 986 columns and snp has 983 rows 15 columns. They are all data frame. File size being 22681376 bytes and 327392 bytes.
+```{r}
+dim(fang)
+dim(snp)
+head(fang)
+head(snp)
+class(fang)
+class(snp)
+str(fang)
+class(snp)
+object.size(fang)
+object.size(snp)
+```
+
+# 2. data processing
+## step 1: 
+### transpose the fang file and merge with snp information
+```{r}
+library(dplyr)
+t_fang <- t(fang)
+fang_group <- t_fang[c(1:3),] %>% as.data.frame()
+fang_data <- t_fang[-c(1:3),] %>% as.data.frame()
+fang_data$SNP_ID <- rownames(fang_data)
+merge <- dplyr::inner_join(snp, fang_data, by = "SNP_ID")
+merge_group <- bind_rows(fang_group, merge) %>% t() %>% as.data.frame()
+```
+
+## Step 2: 
+### split the merged file ino 2 groups according to 'Group': "ZMMIL", "ZMMLR", "ZMMMR" as maize_group; "ZMPBA", "ZMPIL", "ZMPJA" as teosinte_group. Also, "Chromosome","Position" information are extracted out for following steps.
+```{r}
+maize_group <- merge_group %>%
+  dplyr::filter(Group %in% c("ZMMIL", "ZMMLR", "ZMMMR")) %>%
+  rbind(merge_group[c("Chromosome","Position"),]) %>%
+  t() %>%
+  as.data.frame()
+teosinte_group <- merge_group %>%
+  dplyr::filter(Group %in% c("ZMPBA", "ZMPIL", "ZMPJA")) %>%
+  rbind(merge_group[c("Chromosome","Position"),]) %>%
+  t() %>%
+  as.data.frame()
+```
+
+## Step 3: 
+### split by chromosome and sequence by position(Note: "Chromosome","Position"columns are at the end of every data frame)
+```{r}
+process_and_save_files <- function(df, group_name, chromosome) {
+  df_inc <- df %>%
+    filter(Chromosome == chromosome) %>%
+    arrange(Position) %>%
+    mutate(across(everything(), ~ifelse(is.na(.), "?", .)))  
+  write.csv(df_inc, sprintf("%s_chr%s_inc.csv", group_name, chromosome), row.names = FALSE, quote = FALSE)
+    df_dec <- df %>%
+    filter(Chromosome == chromosome) %>%
+    arrange(desc(Position)) %>%
+    mutate(across(everything(), ~ifelse(is.na(.), "-", .)))  
+  write.csv(df_dec, sprintf("%s_chr%s_dec.csv", group_name, chromosome), row.names = FALSE, quote = FALSE)
+}
+groups <- list(maize = maize_group, teosinte = teosinte_group)
+lapply(names(groups), function(group_name) {
+  chromosomes <- unique(groups[[group_name]]$Chromosome)
+  lapply(chromosomes, function(chromosome) {
+    process_and_save_files(groups[[group_name]], group_name, chromosome)
+  })
+})
+```
+# 3. visualization
+### Answer 1: SNPs per chromosome
+```{r}
+library(ggplot2)
+merge <- merge_group %>%
+  t() %>%
+  as.data.frame() %>%
+  mutate(Position_numeric = as.numeric(as.character(Position)))
+merge %>%
+  count(Chromosome) %>%
+  ggplot(aes(x = Chromosome, y = n)) +
+  geom_bar(stat = "identity", position = position_dodge()) +
+  labs(title = "SNP Distribution", x = "Chromosome", y = "Number of SNPs")+
+  theme_minimal()
+known_chromosomes <- as.character(1:10)  
+merge %>%
+  filter(Chromosome %in% known_chromosomes) %>%  
+  ggplot(aes(x = Position_numeric)) +  
+  geom_histogram(binwidth = 1e7, aes(fill = Chromosome)) +
+  facet_wrap(~ Chromosome, scales = "free_x") + 
+  labs(title = "SNP Position Distribution",
+       x = "Position", y = "Count") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+### check maize group and teosinte_group, showing same answer.
+```{r}
+maize_group %>%
+  count(Chromosome) %>%
+  ggplot(aes(x = Chromosome, y = n)) +
+  geom_bar(stat = "identity", position = position_dodge()) +
+  labs(title = "maize - SNP Distribution", x = "Chromosome", y = "Number of SNPs")+
+  theme_minimal()
+teosinte_group %>%
+  count(Chromosome) %>%
+  ggplot(aes(x = Chromosome, y = n)) +
+  geom_bar(stat = "identity", position = position_dodge()) +
+  labs(title = "teosinte - SNP Distribution", x = "Chromosome", y = "Number of SNPs")+
+  theme_minimal()
+```
+## Answer 2: 
+### Missing data and amount of heterozygosity: overall 
+```{r}
+library(tidyr)
+merge_group_long <- merge_group %>%
+  pivot_longer(cols = starts_with("..."), names_to = "SNP", values_to = "Genotype") %>%
+  mutate(Homozygosity = case_when(
+    Genotype %in% c("A/A", "C/C", "G/G", "T/T") ~ "Homozygous",
+    Genotype %in% c("?/A", "?/C", "?/G", "?/T", "A/?","C/?","G/?", "T/?","?/?") ~ "Missing",
+    TRUE ~ "Heterozygous"
+  )) %>%
+  group_by(Homozygosity) %>%
+  summarise(Count = n(), .groups = "drop")
+head(merge_group_long)
+merge_group_long %>%
+  ggplot(aes(x = Homozygosity, y = Count, fill = Homozygosity)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Proportion of Homozygous, Heterozygous, and Missing Data",
+       x = "Group", y = "Proportion") +
+  theme_minimal()
+```
+# own visualization: 
+### I want to check the Homozygosity in every group.
+```{r}
+merge_group %>%
+  group_by(Group) %>%
+  summarise(Count = n()) %>%
+  ggplot(aes(x = Group, y = Count)) +
+  geom_bar(stat = "identity", fill = "skyblue", color = "black") +
+  labs(title = "Group Distribution",
+       x = "Group", y = "Count") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) 
+#Homozygosity by group
+merge_group_long <- merge_group %>%
+  pivot_longer(cols = starts_with("..."), names_to = "SNP", values_to = "Genotype") %>%
+  mutate(Homozygosity = case_when(
+    Genotype %in% c("A/A", "C/C", "G/G", "T/T") ~ "Homozygous",
+    Genotype %in% c("?/A", "?/C", "?/G", "?/T", "A/?","C/?","G/?", "T/?","?/?") ~ "Missing",
+    TRUE ~ "Heterozygous"
+  )) %>%
+  group_by(Group, Homozygosity) %>%
+  summarise(Count = n(), .groups = "drop")
+head(merge_group_long)
+merge_group_long %>%
+  ggplot(aes(x = Group, y = Count, fill = Homozygosity)) +  
+  geom_bar(stat = "identity", position = "fill") +  
+  labs(title = "Proportion of Homozygous, Heterozygous, and Missing Data by Group",
+       x = "Group", y = "Proportion") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))  
+```
+
+=======
+---
+title: "R assignment"
+author: "Yuwei Zhang"
+date: "2024-03-06"
+output: html_document
+---
+# Preparation
+## Import file through github link
+```{r}
+url_raw <- "https://raw.githubusercontent.com/EEOB-BioData/BCB546_Spring2024/main/assignments/UNIX_Assignment/fang_et_al_genotypes.txt"
+fang <- read.delim(url_raw, header = TRUE, sep = "\t", quote = "")
+url_raw2 <-"https://raw.githubusercontent.com/EEOB-BioData/BCB546_Spring2024/main/assignments/UNIX_Assignment/snp_position.txt"
+snp <- read.delim(url_raw2, header = TRUE, sep = "\t", quote = "")
+```
+
+# 1. data inspection
+By running the code below we know that fang et al. has 2782 rows 986 columns and snp has 983 rows 15 columns. They are all data frame.
+```{r}
+dim(fang)
+dim(snp)
+head(fang)
+head(snp)
+class(fang)
+class(snp)
+str(fang)
+class(snp)
+```
+
+# 2. data processing
+## step 1: 
+### transpose the fang file and merge with snp information
+```{r}
+library(dplyr)
+t_fang <- t(fang)
+fang_group <- t_fang[c(1:3),] %>% as.data.frame()
+fang_data <- t_fang[-c(1:3),] %>% as.data.frame()
+fang_data$SNP_ID <- rownames(fang_data)
+merge <- dplyr::inner_join(snp, fang_data, by = "SNP_ID")
+merge_group <- bind_rows(fang_group, merge) %>% t() %>% as.data.frame()
+```
+
+## Step 2: 
+### split the merged file ino 2 groups according to 'Group': "ZMMIL", "ZMMLR", "ZMMMR" as maize_group; "ZMPBA", "ZMPIL", "ZMPJA" as teosinte_group. Also, "Chromosome","Position" information are extracted out for following steps.
+```{r}
+maize_group <- merge_group %>%
+  dplyr::filter(Group %in% c("ZMMIL", "ZMMLR", "ZMMMR")) %>%
+  rbind(merge_group[c("Chromosome","Position"),]) %>%
+  t() %>%
+  as.data.frame()
+teosinte_group <- merge_group %>%
+  dplyr::filter(Group %in% c("ZMPBA", "ZMPIL", "ZMPJA")) %>%
+  rbind(merge_group[c("Chromosome","Position"),]) %>%
+  t() %>%
+  as.data.frame()
+```
+
+## Step 3: 
+### split by chromosome and sequence by position(Note: "Chromosome","Position"columns are at the end of every data frame)
+```{r}
+process_and_save_files <- function(df, group_name, chromosome) {
+  df_inc <- df %>%
+    filter(Chromosome == chromosome) %>%
+    arrange(Position) %>%
+    mutate(across(everything(), ~ifelse(is.na(.), "?", .)))  
+  write.csv(df_inc, sprintf("%s_chr%s_inc.csv", group_name, chromosome), row.names = FALSE, quote = FALSE)
+    df_dec <- df %>%
+    filter(Chromosome == chromosome) %>%
+    arrange(desc(Position)) %>%
+    mutate(across(everything(), ~ifelse(is.na(.), "-", .)))  
+  write.csv(df_dec, sprintf("%s_chr%s_dec.csv", group_name, chromosome), row.names = FALSE, quote = FALSE)
+}
+groups <- list(maize = maize_group, teosinte = teosinte_group)
+lapply(names(groups), function(group_name) {
+  chromosomes <- unique(groups[[group_name]]$Chromosome)
+  lapply(chromosomes, function(chromosome) {
+    process_and_save_files(groups[[group_name]], group_name, chromosome)
+  })
+})
+```
+# 3. visualization
+### Answer 1: SNPs per chromosome
+```{r}
+library(ggplot2)
+merge <- merge_group %>%
+  t() %>%
+  as.data.frame() %>%
+  mutate(Position_numeric = as.numeric(as.character(Position)))
+merge %>%
+  count(Chromosome) %>%
+  ggplot(aes(x = Chromosome, y = n)) +
+  geom_bar(stat = "identity", position = position_dodge()) +
+  labs(title = "SNP Distribution", x = "Chromosome", y = "Number of SNPs")+
+  theme_minimal()
+known_chromosomes <- as.character(1:10)  
+merge %>%
+  filter(Chromosome %in% known_chromosomes) %>%  
+  ggplot(aes(x = Position_numeric)) +  
+  geom_histogram(binwidth = 1e7, aes(fill = Chromosome)) +
+  facet_wrap(~ Chromosome, scales = "free_x") + 
+  labs(title = "SNP Position Distribution",
+       x = "Position", y = "Count") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+### check maize group and teosinte_group, showing same answer.
+```{r}
+maize_group %>%
+  count(Chromosome) %>%
+  ggplot(aes(x = Chromosome, y = n)) +
+  geom_bar(stat = "identity", position = position_dodge()) +
+  labs(title = "maize - SNP Distribution", x = "Chromosome", y = "Number of SNPs")+
+  theme_minimal()
+teosinte_group %>%
+  count(Chromosome) %>%
+  ggplot(aes(x = Chromosome, y = n)) +
+  geom_bar(stat = "identity", position = position_dodge()) +
+  labs(title = "teosinte - SNP Distribution", x = "Chromosome", y = "Number of SNPs")+
+  theme_minimal()
+```
+## Answer 2: 
+### Missing data and amount of heterozygosity: overall 
+```{r}
+library(tidyr)
+merge_group_long <- merge_group %>%
+  pivot_longer(cols = starts_with("..."), names_to = "SNP", values_to = "Genotype") %>%
+  mutate(Homozygosity = case_when(
+    Genotype %in% c("A/A", "C/C", "G/G", "T/T") ~ "Homozygous",
+    Genotype %in% c("?/A", "?/C", "?/G", "?/T", "A/?","C/?","G/?", "T/?","?/?") ~ "Missing",
+    TRUE ~ "Heterozygous"
+  )) %>%
+  group_by(Homozygosity) %>%
+  summarise(Count = n(), .groups = "drop")
+head(merge_group_long)
+merge_group_long %>%
+  ggplot(aes(x = Homozygosity, y = Count, fill = Homozygosity)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Proportion of Homozygous, Heterozygous, and Missing Data",
+       x = "Group", y = "Proportion") +
+  theme_minimal()
+```
+# own visualization: 
+### I want to check the Homozygosity in every group.
+```{r}
+merge_group %>%
+  group_by(Group) %>%
+  summarise(Count = n()) %>%
+  ggplot(aes(x = Group, y = Count)) +
+  geom_bar(stat = "identity", fill = "skyblue", color = "black") +
+  labs(title = "Group Distribution",
+       x = "Group", y = "Count") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) 
+#Homozygosity by group
+merge_group_long <- merge_group %>%
+  pivot_longer(cols = starts_with("..."), names_to = "SNP", values_to = "Genotype") %>%
+  mutate(Homozygosity = case_when(
+    Genotype %in% c("A/A", "C/C", "G/G", "T/T") ~ "Homozygous",
+    Genotype %in% c("?/A", "?/C", "?/G", "?/T", "A/?","C/?","G/?", "T/?","?/?") ~ "Missing",
+    TRUE ~ "Heterozygous"
+  )) %>%
+  group_by(Group, Homozygosity) %>%
+  summarise(Count = n(), .groups = "drop")
+head(merge_group_long)
+merge_group_long %>%
+  ggplot(aes(x = Group, y = Count, fill = Homozygosity)) +  
+  geom_bar(stat = "identity", position = "fill") +  
+  labs(title = "Proportion of Homozygous, Heterozygous, and Missing Data by Group",
+       x = "Group", y = "Proportion") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))  
+```
+
+>>>>>>> ce7550e0875ac5843085d78b0dfb57767c8dcf05
