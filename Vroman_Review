@@ -1,0 +1,177 @@
+#Overall, your code works well and ran for me. I looked at your files and figures created and they all appear to have ran correctly. I feel you have previous experience with R from some of your coding style - so apologies if I don't have many useful comments - you did a great job!
+#From the start, I used a read.table instead of reading the straight url. Obviously no way is better than the other, just a different way to think of things.
+#I will suggest you add your workflow overview to your README.md file.
+#I also split my data into it's groups before transposing. I created a separate column with the product type, and I'm learning from both you and the other assignment I reviewd it's probably best to just filter out what I plan to use instead of creating an extra step for myself.
+```{r}
+url_raw <- "https://raw.githubusercontent.com/EEOB-BioData/BCB546_Spring2024/main/assignments/UNIX_Assignment/fang_et_al_genotypes.txt"
+fang <- read.delim(url_raw, header = TRUE, sep = "\t", quote = "")
+url_raw2 <-"https://raw.githubusercontent.com/EEOB-BioData/BCB546_Spring2024/main/assignments/UNIX_Assignment/snp_position.txt"
+snp <- read.delim(url_raw2, header = TRUE, sep = "\t", quote = "")
+```
+## Step 2: 
+### split the merged file ino 2 groups according to 'Group': "ZMMIL", "ZMMLR", "ZMMMR" as maize_group; "ZMPBA", "ZMPIL", "ZMPJA" as teosinte_group. Also, "Chromosome","Position" information are extracted out for following steps.
+```{r}
+maize_group <- merge_group %>%
+  dplyr::filter(Group %in% c("ZMMIL", "ZMMLR", "ZMMMR")) %>%
+  rbind(merge_group[c("Chromosome","Position"),]) %>%
+  t() %>%
+  as.data.frame()
+teosinte_group <- merge_group %>%
+  dplyr::filter(Group %in% c("ZMPBA", "ZMPIL", "ZMPJA")) %>%
+  rbind(merge_group[c("Chromosome","Position"),]) %>%
+  t() %>%
+  as.data.frame()
+```
+##This code works very well, I like how you made it into a function and avoided both using a for loop and repeating code. It took me a bit of back and forth to understand how you created the function with the group name and df, but it all works smoothly and works well too. I'm impressed how you kept the code this succinct. 
+## Step 3: 
+### split by chromosome and sequence by position(Note: "Chromosome","Position"columns are at the end of every data frame)
+```{r}
+process_and_save_files <- function(df, group_name, chromosome) {
+  df_inc <- df %>%
+    filter(Chromosome == chromosome) %>%
+    arrange(Position) %>%
+    mutate(across(everything(), ~ifelse(is.na(.), "?", .)))  
+  write.csv(df_inc, sprintf("%s_chr%s_inc.csv", group_name, chromosome), row.names = FALSE, quote = FALSE)
+    df_dec <- df %>%
+    filter(Chromosome == chromosome) %>%
+    arrange(desc(Position)) %>%
+    mutate(across(everything(), ~ifelse(is.na(.), "-", .)))  
+  write.csv(df_dec, sprintf("%s_chr%s_dec.csv", group_name, chromosome), row.names = FALSE, quote = FALSE)
+}
+groups <- list(maize = maize_group, teosinte = teosinte_group)
+lapply(names(groups), function(group_name) {
+  chromosomes <- unique(groups[[group_name]]$Chromosome)
+  lapply(chromosomes, function(chromosome) {
+    process_and_save_files(groups[[group_name]], group_name, chromosome)
+  })
+})
+```
+##Your visualizations are done well too. I like how you create many figures but show them together. 
+# 3. visualization
+### Answer 1: SNPs per chromosome
+```{r}
+library(ggplot2)
+merge <- merge_group %>%
+  t() %>%
+  as.data.frame() %>%
+  mutate(Position_numeric = as.numeric(as.character(Position)))
+merge %>%
+  count(Chromosome) %>%
+  ggplot(aes(x = Chromosome, y = n)) +
+  geom_bar(stat = "identity", position = position_dodge()) +
+  labs(title = "SNP Distribution", x = "Chromosome", y = "Number of SNPs")+
+  theme_minimal()
+known_chromosomes <- as.character(1:10)  
+merge %>%
+  filter(Chromosome %in% known_chromosomes) %>%  
+  ggplot(aes(x = Position_numeric)) +  
+  geom_histogram(binwidth = 1e7, aes(fill = Chromosome)) +
+  facet_wrap(~ Chromosome, scales = "free_x") + 
+  labs(title = "SNP Position Distribution",
+       x = "Position", y = "Count") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+#I appreciate that you added the check here
+### check maize group and teosinte_group, showing same answer.
+```{r}
+maize_group %>%
+  count(Chromosome) %>%
+  ggplot(aes(x = Chromosome, y = n)) +
+  geom_bar(stat = "identity", position = position_dodge()) +
+  labs(title = "maize - SNP Distribution", x = "Chromosome", y = "Number of SNPs")+
+  theme_minimal()
+teosinte_group %>%
+  count(Chromosome) %>%
+  ggplot(aes(x = Chromosome, y = n)) +
+  geom_bar(stat = "identity", position = position_dodge()) +
+  labs(title = "teosinte - SNP Distribution", x = "Chromosome", y = "Number of SNPs")+
+  theme_minimal()
+```
+#Again, this is a really efficient way to create these figures.
+## Answer 2: 
+### Missing data and amount of heterozygosity: overall & by sample
+```{r}
+library(tidyr)
+merge_group_long <- merge_group %>%
+  pivot_longer(cols = starts_with("..."), names_to = "SNP", values_to = "Genotype") %>%
+  mutate(Homozygosity = case_when(
+    Genotype %in% c("A/A", "C/C", "G/G", "T/T") ~ "Homozygous",
+    Genotype %in% c("?/A", "?/C", "?/G", "?/T", "A/?","C/?","G/?", "T/?","?/?") ~ "Missing",
+    TRUE ~ "Heterozygous"
+  )) %>%
+  group_by(Homozygosity) %>%
+  summarise(Count = n(), .groups = "drop")
+head(merge_group_long)
+merge_group_long %>%
+  ggplot(aes(x = Homozygosity, y = Count, fill = Homozygosity)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Proportion of Homozygous, Heterozygous, and Missing Data",
+       x = "Group", y = "Proportion") +
+  theme_minimal()
+
+
+merge_group_long2 <- merge_group %>%
+  pivot_longer(cols = starts_with("..."), names_to = "SNP", values_to = "Genotype") %>%
+  mutate(Homozygosity = case_when(
+    Genotype %in% c("A/A", "C/C", "G/G", "T/T") ~ "Homozygous",
+    Genotype %in% c("?/A", "?/C", "?/G", "?/T", "A/?","C/?","G/?", "T/?","?/?") ~ "Missing",
+    TRUE ~ "Heterozygous"
+  ))
+merge_group_long2 %>%
+  group_by(Sample_ID, Homozygosity) %>%
+  summarise(Count = n(), .groups = "drop")%>%
+  ggplot(aes(x = Sample_ID, y = Count, fill = Homozygosity)) +  
+  geom_bar(stat = "identity", position = "fill") +  
+  labs(title = "Proportion of Homozygous, Heterozygous, and Missing Data by sample",
+       x = "sample", y = "Proportion") +
+  theme_minimal() +
+  theme(axis.text.x = NULL) 
+```
+### Missing data and amount of heterozygosity: by group
+```{r}
+merge_group %>%
+  group_by(Group) %>%
+  summarise(Count = n()) %>%
+  ggplot(aes(x = Group, y = Count)) +
+  geom_bar(stat = "identity", fill = "skyblue", color = "black") +
+  labs(title = "Group Distribution",
+       x = "Group", y = "Count") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) 
+#Homozygosity by group
+merge_group_long <- merge_group %>%
+  pivot_longer(cols = starts_with("..."), names_to = "SNP", values_to = "Genotype") %>%
+  mutate(Homozygosity = case_when(
+    Genotype %in% c("A/A", "C/C", "G/G", "T/T") ~ "Homozygous",
+    Genotype %in% c("?/A", "?/C", "?/G", "?/T", "A/?","C/?","G/?", "T/?","?/?") ~ "Missing",
+    TRUE ~ "Heterozygous"
+  )) %>%
+  group_by(Group, Homozygosity) %>%
+  summarise(Count = n(), .groups = "drop")
+head(merge_group_long)
+merge_group_long %>%
+  ggplot(aes(x = Group, y = Count, fill = Homozygosity)) +  
+  geom_bar(stat = "identity", position = "fill") +  
+  labs(title = "Proportion of Homozygous, Heterozygous, and Missing Data by Group",
+       x = "Group", y = "Proportion") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))  
+```
+##I think this is valid data to visualize and, once again, worked well running for me.
+# own visualization: 
+### I want to check the candidate & random in every chromosome.
+```{r}
+merge_group2 <- merge_group %>% t() %>% as.data.frame()
+merge_group2 %>%
+  group_by(Chromosome, candidate.random) %>%
+  summarise(count = n()) %>%
+  #factor(levels = c("1","2","3","4","5","6","7","8","9","10","multiple","unknown")) %>%
+  ggplot(aes(x = Chromosome, y = count, fill = candidate.random)) +
+    geom_bar(stat = "identity") +  
+  labs(title = "Candidate & random among chromosome",
+       x = "Chromosome", y = "candidate.random") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))  
+```
+#Once you add to the README.md, I think you're set!
